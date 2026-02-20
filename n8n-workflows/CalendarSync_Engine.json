@@ -1,0 +1,426 @@
+{
+  "name": "CalendarSync_Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1vs6MdV4mgIIqiuy837wNCPQzIj71MgjdvqpE0d0kego",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Rules",
+          "mode": "list"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "enabled",
+              "lookupValue": "TRUE"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-enabled-rules",
+      "name": "Get Enabled Rules",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [460, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "CREDENTIAL_ID",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1vs6MdV4mgIIqiuy837wNCPQzIj71MgjdvqpE0d0kego",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Calendars",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "get-all-calendars",
+      "name": "Get All Calendars",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [460, 500],
+      "credentials": {
+        "googleApi": {
+          "id": "CREDENTIAL_ID",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1vs6MdV4mgIIqiuy837wNCPQzIj71MgjdvqpE0d0kego",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Users",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "get-all-users",
+      "name": "Get All Users",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [460, 700],
+      "credentials": {
+        "googleApi": {
+          "id": "CREDENTIAL_ID",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine rules with calendar details\nconst rules = $('Get Enabled Rules').all();\nconst calendars = $('Get All Calendars').all();\nconst users = $('Get All Users').all();\n\n// Create lookup maps\nconst calendarMap = {};\ncalendars.forEach(cal => {\n  calendarMap[cal.json.calendar_id] = cal.json;\n});\n\nconst userMap = {};\nusers.forEach(user => {\n  userMap[user.json.user_id] = user.json;\n});\n\n// Build sync jobs\nconst syncJobs = [];\n\nfor (const rule of rules) {\n  const r = rule.json;\n  const sourceCal = calendarMap[r.source_cal_id];\n  const targetCal = calendarMap[r.target_cal_id];\n  const user = userMap[r.user_id];\n  \n  if (!sourceCal || !targetCal || !user) {\n    continue; // Skip invalid rules\n  }\n  \n  syncJobs.push({\n    rule_id: r.rule_id,\n    user_id: r.user_id,\n    user_email: user.email,\n    source_calendar_email: sourceCal.calendar_email,\n    source_calendar_name: sourceCal.calendar_name,\n    target_calendar_email: targetCal.calendar_email,\n    target_calendar_name: targetCal.calendar_name,\n    visibility: r.visibility || 'censored'\n  });\n}\n\nif (syncJobs.length === 0) {\n  return [{ json: { noJobs: true, message: 'No valid sync jobs found' } }];\n}\n\nreturn syncJobs.map(job => ({ json: job }));"
+      },
+      "id": "build-sync-jobs",
+      "name": "Build Sync Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-jobs",
+              "leftValue": "={{ $json.noJobs }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-jobs",
+      "name": "Has Sync Jobs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 500]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.source_calendar_email) }}/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "timeMin",
+              "value": "={{ new Date().toISOString() }}"
+            },
+            {
+              "name": "timeMax",
+              "value": "={{ new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() }}"
+            },
+            {
+              "name": "singleEvents",
+              "value": "true"
+            },
+            {
+              "name": "orderBy",
+              "value": "startTime"
+            },
+            {
+              "name": "maxResults",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-source-events",
+      "name": "Fetch Source Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 400],
+      "credentials": {
+        "googleApi": {
+          "id": "CREDENTIAL_ID",
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process fetched events and prepare for target calendar\nconst input = $input.first().json;\nconst syncJob = $('Has Sync Jobs?').first().json;\n\n// Handle errors\nif (input.error) {\n  return [{ \n    json: { \n      error: true, \n      message: `Failed to fetch from ${syncJob.source_calendar_email}: ${input.error.message || 'Unknown error'}`,\n      rule_id: syncJob.rule_id\n    } \n  }];\n}\n\nconst events = input.items || [];\n\nif (events.length === 0) {\n  return [{ \n    json: { \n      noEvents: true, \n      message: 'No events to sync',\n      rule_id: syncJob.rule_id\n    } \n  }];\n}\n\n// Transform events based on visibility setting\nconst syncedEvents = events.map(event => {\n  const isCensored = syncJob.visibility === 'censored';\n  \n  return {\n    rule_id: syncJob.rule_id,\n    target_calendar_email: syncJob.target_calendar_email,\n    source_event_id: event.id,\n    summary: isCensored ? 'Busy (synced)' : event.summary,\n    description: isCensored ? `Synced from ${syncJob.source_calendar_name}` : event.description,\n    start: event.start,\n    end: event.end,\n    transparency: 'opaque',\n    extendedProperties: {\n      private: {\n        syncedFrom: syncJob.source_calendar_email,\n        syncRuleId: syncJob.rule_id,\n        originalEventId: event.id\n      }\n    }\n  };\n});\n\nreturn syncedEvents.map(e => ({ json: e }));"
+      },
+      "id": "process-events",
+      "name": "Process Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-events",
+              "leftValue": "={{ $json.noEvents }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "no-error",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-events",
+      "name": "Has Events?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.target_calendar_email) }}/events",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"summary\": {{ JSON.stringify($json.summary) }},\n  \"description\": {{ JSON.stringify($json.description || '') }},\n  \"start\": {{ JSON.stringify($json.start) }},\n  \"end\": {{ JSON.stringify($json.end) }},\n  \"transparency\": \"opaque\",\n  \"extendedProperties\": {{ JSON.stringify($json.extendedProperties) }}\n}",
+        "options": {}
+      },
+      "id": "create-target-event",
+      "name": "Create Target Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "CREDENTIAL_ID",
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log sync results\nconst results = $input.all();\n\nconst summary = {\n  timestamp: new Date().toISOString(),\n  eventsProcessed: results.length,\n  success: results.filter(r => !r.json.error).length,\n  failed: results.filter(r => r.json.error).length\n};\n\nconsole.log('Sync completed:', JSON.stringify(summary));\n\nreturn [{ json: summary }];"
+      },
+      "id": "log-results",
+      "name": "Log Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No jobs to process\nreturn [{ json: { message: 'No sync jobs - nothing to do', timestamp: new Date().toISOString() } }];"
+      },
+      "id": "no-jobs",
+      "name": "No Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 600]
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Enabled Rules",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get All Calendars",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get All Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Enabled Rules": {
+      "main": [
+        [
+          {
+            "node": "Build Sync Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Calendars": {
+      "main": [
+        [
+          {
+            "node": "Build Sync Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Users": {
+      "main": [
+        [
+          {
+            "node": "Build Sync Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Sync Jobs": {
+      "main": [
+        [
+          {
+            "node": "Has Sync Jobs?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Sync Jobs?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Source Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Source Events": {
+      "main": [
+        [
+          {
+            "node": "Process Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Events": {
+      "main": [
+        [
+          {
+            "node": "Has Events?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Events?": {
+      "main": [
+        [
+          {
+            "node": "Create Target Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Create Target Event": {
+      "main": [
+        [
+          {
+            "node": "Log Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}
